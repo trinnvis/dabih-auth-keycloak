@@ -1,0 +1,29 @@
+# AWS Configuration
+aws_region = "eu-central-1"
+
+# Project Configuration
+project_name = "dabih-auth-keycloak"
+environment  = "production"
+domain_name  = "auth.trinnvis.no"
+
+# Database Configuration
+rds_instance_identifier    = "dabih-database"
+database_name              = "dabih_tasks"
+db_schema                  = "keycloak"
+db_credentials_secret_name = "rds/dabih-database/keycloak"
+
+# Database credentials (store these securely!)
+db_username = "keycloak_user"
+db_password = "CHANGE_THIS_PASSWORD"
+
+# Keycloak Admin Configuration
+keycloak_admin_user     = "admin"
+keycloak_admin_password = "CHANGE_THIS_PASSWORD"
+
+# ECS Task Configuration
+task_cpu      = "1024"  # 1 vCPU
+task_memory   = "2048"  # 2 GB
+desired_count = 1
+
+# Keycloak Version
+keycloak_version = "26.0"

@@ -1,0 +1,109 @@
+name: Rollback Keycloak Deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      task_definition_revision:
+        description: 'Task definition revision number to rollback to (optional - uses previous if not specified)'
+        required: false
+
+env:
+  AWS_REGION: eu-central-1
+  ECS_SERVICE: dabih-auth-keycloak
+  ECS_CLUSTER: dabih-auth-keycloak-cluster
+  TASK_DEFINITION: dabih-auth-keycloak
+
+jobs:
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Get current task definition
+      id: current-task
+      run: |
+        CURRENT_TASK_DEF=$(aws ecs describe-services \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --services ${{ env.ECS_SERVICE }} \
+          --query 'services[0].taskDefinition' \
+          --output text)
+        
+        echo "Current task definition: $CURRENT_TASK_DEF"
+        CURRENT_REVISION=$(echo $CURRENT_TASK_DEF | grep -oE '[0-9]+$')
+        echo "current_revision=$CURRENT_REVISION" >> $GITHUB_OUTPUT
+        
+        # Calculate previous revision if not specified
+        if [ -z "${{ github.event.inputs.task_definition_revision }}" ]; then
+          PREVIOUS_REVISION=$((CURRENT_REVISION - 1))
+          echo "target_revision=$PREVIOUS_REVISION" >> $GITHUB_OUTPUT
+        else
+          echo "target_revision=${{ github.event.inputs.task_definition_revision }}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Verify target task definition exists
+      run: |
+        TARGET_TASK_DEF="${{ env.TASK_DEFINITION }}:${{ steps.current-task.outputs.target_revision }}"
+        
+        aws ecs describe-task-definition \
+          --task-definition $TARGET_TASK_DEF \
+          --query 'taskDefinition.taskDefinitionArn' \
+          --output text || {
+            echo "Error: Task definition $TARGET_TASK_DEF not found"
+            exit 1
+          }
+        
+        echo "Target task definition: $TARGET_TASK_DEF"
+
+    - name: Update service with target task definition
+      run: |
+        TARGET_TASK_DEF="${{ env.TASK_DEFINITION }}:${{ steps.current-task.outputs.target_revision }}"
+        
+        aws ecs update-service \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --service ${{ env.ECS_SERVICE }} \
+          --task-definition $TARGET_TASK_DEF \
+          --force-new-deployment
+        
+        echo "Rollback initiated to revision ${{ steps.current-task.outputs.target_revision }}"
+
+    - name: Wait for service stability
+      run: |
+        echo "Waiting for service to stabilize..."
+        aws ecs wait services-stable \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --services ${{ env.ECS_SERVICE }}
+        
+        echo "Service has stabilized"
+
+    - name: Verify rollback
+      run: |
+        DEPLOYED_TASK_DEF=$(aws ecs describe-services \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --services ${{ env.ECS_SERVICE }} \
+          --query 'services[0].taskDefinition' \
+          --output text)
+        
+        DEPLOYED_REVISION=$(echo $DEPLOYED_TASK_DEF | grep -oE '[0-9]+$')
+        
+        if [ "$DEPLOYED_REVISION" = "${{ steps.current-task.outputs.target_revision }}" ]; then
+          echo "✅ Rollback successful!"
+          echo "Service is now running task definition revision: $DEPLOYED_REVISION"
+        else
+          echo "⚠️  Warning: Service is running revision $DEPLOYED_REVISION, expected ${{ steps.current-task.outputs.target_revision }}"
+          exit 1
+        fi
+
+    - name: Get service status
+      run: |
+        aws ecs describe-services \
+          --cluster ${{ env.ECS_CLUSTER }} \
+          --services ${{ env.ECS_SERVICE }} \
+          --query 'services[0].{Status:status,RunningCount:runningCount,DesiredCount:desiredCount,TaskDefinition:taskDefinition}'

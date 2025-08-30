@@ -1,0 +1,104 @@
+name: OpenTofu Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+          - destroy
+
+env:
+  TF_VERSION: '1.8.0'
+  AWS_REGION: 'eu-central-1'
+
+jobs:
+  terraform:
+    name: OpenTofu ${{ github.event.inputs.action }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./infrastructure
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup OpenTofu
+      uses: opentofu/setup-opentofu@v1
+      with:
+        tofu_version: ${{ env.TF_VERSION }}
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: OpenTofu Init
+      id: init
+      run: tofu init
+
+    - name: OpenTofu Format Check
+      id: fmt
+      run: tofu fmt -check
+      continue-on-error: true
+
+    - name: OpenTofu Validate
+      id: validate
+      run: tofu validate -no-color
+
+    - name: Create terraform.tfvars
+      run: |
+        cat > terraform.tfvars <<EOF
+        aws_region = "${{ env.AWS_REGION }}"
+        project_name = "dabih-auth-keycloak"
+        environment = "production"
+        domain_name = "auth.trinnvis.no"
+        
+        # Database Configuration
+        rds_instance_identifier = "dabih-database"
+        database_name = "dabih_tasks"
+        db_schema = "keycloak"
+        db_credentials_secret_name = "rds/dabih-database/keycloak"
+        
+        # Database credentials from secrets
+        db_username = "${{ secrets.KEYCLOAK_DB_USERNAME }}"
+        db_password = "${{ secrets.KEYCLOAK_DB_PASSWORD }}"
+        
+        # Keycloak Admin Configuration
+        keycloak_admin_user = "${{ secrets.KEYCLOAK_ADMIN_USER }}"
+        keycloak_admin_password = "${{ secrets.KEYCLOAK_ADMIN_PASSWORD }}"
+        
+        # ECS Task Configuration
+        task_cpu = "1024"
+        task_memory = "2048"
+        desired_count = 1
+        
+        # Keycloak Version
+        keycloak_version = "26.0"
+        EOF
+
+    - name: OpenTofu Plan
+      id: plan
+      if: github.event.inputs.action == 'plan' || github.event.inputs.action == 'apply'
+      run: tofu plan -no-color -input=false
+      continue-on-error: false
+
+    - name: OpenTofu Apply
+      if: github.event.inputs.action == 'apply'
+      run: tofu apply -auto-approve -input=false
+
+    - name: OpenTofu Destroy
+      if: github.event.inputs.action == 'destroy'
+      run: tofu destroy -auto-approve -input=false
+
+    - name: Clean up sensitive files
+      if: always()
+      run: rm -f terraform.tfvars
